@@ -1,1 +1,4 @@
 /troubleshooting
+/terraform/terraform.tfvars
+/terraform/.terraform
+/CLAUDE.md

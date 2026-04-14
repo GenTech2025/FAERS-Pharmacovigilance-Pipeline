@@ -1,5 +1,0 @@
-# Copy this file to terraform.tfvars and fill in your values.
-# terraform.tfvars is gitignored — never commit real values.
-
-project         = "your-gcp-project-id"
-gcs_bucket_name = "de-zoomcamp-faers-lake-your-gcp-project-id"

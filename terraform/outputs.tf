@@ -22,9 +22,3 @@ output "pipeline_service_account_email" {
   description = "Email of the FAERS pipeline service account (use this in Kestra + dbt profiles)"
   value       = google_service_account.faers_pipeline_sa.email
 }
-
-output "pipeline_sa_key_path" {
-  description = "Local path where the pipeline service account key was written"
-  value       = local_file.sa_key_file.filename
-  sensitive   = true
-}

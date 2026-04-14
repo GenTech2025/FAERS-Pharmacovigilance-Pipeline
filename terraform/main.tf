@@ -8,9 +8,8 @@ terraform {
 }
 
 provider "google" {
-  credentials = file(var.credentials)
-  project     = var.project
-  region      = var.region
+  project = var.project
+  region  = var.region
 }
 
 # ── Service Account ──────────────────────────────────────────────────────────
@@ -39,15 +38,6 @@ resource "google_project_iam_member" "sa_bq_job_user" {
   member  = "serviceAccount:${google_service_account.faers_pipeline_sa.email}"
 }
 
-resource "google_service_account_key" "faers_pipeline_sa_key" {
-  service_account_id = google_service_account.faers_pipeline_sa.name
-}
-
-resource "local_file" "sa_key_file" {
-  content  = base64decode(google_service_account_key.faers_pipeline_sa_key.private_key)
-  filename = "${path.module}/keys/faers-pipeline-sa.json"
-}
-
 # ── GCS Data Lake Bucket ──────────────────────────────────────────────────────
 
 resource "google_storage_bucket" "faers_lake" {
@@ -57,7 +47,8 @@ resource "google_storage_bucket" "faers_lake" {
   force_destroy = true
 
   # Prevent accidental public exposure
-  public_access_prevention = "enforced"
+  public_access_prevention    = "enforced"
+  uniform_bucket_level_access = true
 
   lifecycle_rule {
     condition {

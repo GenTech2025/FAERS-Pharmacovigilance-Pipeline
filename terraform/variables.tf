@@ -1,8 +1,3 @@
-variable "credentials" {
-  description = "Path to a GCP service account JSON key with Owner or Editor rights — used only to bootstrap the pipeline service account"
-  default     = "./keys/bootstrap-credentials.json"
-}
-
 variable "project" {
   description = "GCP Project ID"
   # Set via TF_VAR_project env var or override in terraform.tfvars

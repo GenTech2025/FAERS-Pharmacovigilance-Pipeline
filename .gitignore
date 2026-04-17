@@ -1,4 +1,8 @@
 /troubleshooting
 /terraform/terraform.tfvars
 /terraform/.terraform
+/terraform/terraform.tfstate
+/terraform/terraform.tfstate.backup
 /CLAUDE.md
+.env
+docker-compose.override.yml

@@ -1,0 +1,66 @@
+# FAERS Pipeline — Local Kestra (standalone mode, H2 in-memory DB)
+#
+# Prerequisites before running:
+#   1. Authenticate with GCP:
+#        gcloud auth login
+#        gcloud auth application-default login
+#   2. Copy ADC credentials to a fixed host path:
+#        cp ~/.config/gcloud/application_default_credentials.json /tmp/gcp-adc.json
+#   3. Start Kestra:
+#        docker compose up -d
+#   4. Open the UI:  http://localhost:8080
+#   5. Upload the flow YAML from kestra/flows/ via the UI or Kestra CLI
+
+version: "3.9"
+
+services:
+  kestra:
+    image: kestra/kestra:latest
+    pull_policy: always
+    user: "root"
+    command: server standalone --worker-thread=128
+    volumes:
+      - kestra-data:/app/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/kestra-wd:/tmp/kestra-wd
+      # ADC credential file — must be copied to host at /tmp/gcp-adc.json first
+      # (see Prerequisites above).  Mounted read-only into Kestra AND into any
+      # Docker-based script tasks that declare the same volume.
+      - /tmp/gcp-adc.json:/tmp/gcp-adc.json:ro
+    environment:
+      # GCP authentication — picked up by native Kestra GCP plugins automatically
+      GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-adc.json
+      # Pipeline config — referenced in flows as {{ envs.GCP_PROJECT_ID }} etc.
+      GCP_PROJECT_ID: de-zoomcamp-faers-lake
+      GCS_BUCKET: de-zoomcamp-faers-lake-2026
+      KESTRA_CONFIGURATION: |
+        datasource:
+          url: jdbc:h2:mem:public;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+          driverClassName: org.h2.Driver
+          username: sa
+          password: ""
+        kestra:
+          server:
+            basicAuth:
+              enabled: false
+              username: "admin@kestra.io"
+              password: kestra
+          repository:
+            type: memory
+          storage:
+            type: local
+            local:
+              basePath: "/app/storage"
+          queue:
+            type: memory
+          tasks:
+            tmpDir:
+              path: /tmp/kestra-wd/tmp
+          url: http://localhost:8080/
+    ports:
+      - "8080:8080"   # Kestra UI + REST API
+      - "8081:8081"   # Kestra management endpoint
+
+volumes:
+  kestra-data:
+    driver: local

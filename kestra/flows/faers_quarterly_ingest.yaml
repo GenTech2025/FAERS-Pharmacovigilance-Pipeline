@@ -5,12 +5,7 @@ description: |
   the 7 ASCII flat files (DEMO, DRUG, REAC, OUTC, RPSR, THER, INDI),
   normalises filenames to lowercase, uploads them to GCS under
   raw/faers/{year}{quarter}/, and loads each file into a BigQuery raw table.
-
   Idempotent: WRITE_TRUNCATE means re-running the same quarter is safe.
-
-  Inputs:
-    year    – 4-digit year  (default 2023)
-    quarter – Q1/Q2/Q3/Q4  (default Q4)
 
 labels:
   project: faers-pharmacovigilance
@@ -25,43 +20,34 @@ inputs:
   - id: quarter
     type: STRING
     defaults: "Q4"
-    description: "Quarter identifier — must be Q1, Q2, Q3, or Q4"
+    description: "Quarter identifier - must be Q1, Q2, Q3, or Q4"
 
 variables:
-  # FDA download URL (lowercase quarter in filename)
+  gcs_bucket: "de-zoomcamp-faers-lake-2026"
+  gcp_project: "de-zoomcamp-faers-lake"
   fda_url: "https://fis.fda.gov/content/Exports/faers_ascii_{{ inputs.year }}{{ inputs.quarter | lower }}.zip"
-  # GCS folder: raw/faers/2023Q4/
   gcs_prefix: "raw/faers/{{ inputs.year }}{{ inputs.quarter | upper }}"
-  # BigQuery table suffix: 2023q4
   table_suffix: "{{ inputs.year }}{{ inputs.quarter | lower }}"
 
 tasks:
 
-  # ── 1. Log start ────────────────────────────────────────────────────────────
   - id: log_start
     type: io.kestra.plugin.core.log.Log
-    message: "Starting FAERS ingestion — year={{ inputs.year }}, quarter={{ inputs.quarter }}"
+    message: "Starting FAERS ingestion - year={{ inputs.year }}, quarter={{ inputs.quarter }}"
     level: INFO
 
-  # ── 2. Download ZIP → extract files → upload 7 .txt files to GCS ────────────
-  # Runs in a Python 3.11 container.  The ADC credential file is mounted from
-  # the host path /tmp/gcp-adc.json (see docker-compose.yml prerequisites).
   - id: download_extract_upload
     type: io.kestra.plugin.scripts.python.Script
     description: "Download FAERS ZIP, extract 7 flat files, upload to GCS"
-    docker:
-      image: python:3.11-slim
-      volumes:
-        # Mount the ADC file from the host (same path used in docker-compose.yml)
-        - /tmp/gcp-adc.json:/tmp/gcp-adc.json:ro
-    beforeCommands:
-      - pip install -q requests google-cloud-storage
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    dependencies:
+      - requests
+      - google-cloud-storage
     env:
-      GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-adc.json
-      GCP_PROJECT_ID: "{{ envs.GCP_PROJECT_ID }}"
-      GCS_BUCKET: "{{ envs.GCS_BUCKET }}"
-      FDA_URL: "{{ vars.fda_url }}"
-      GCS_PREFIX: "{{ vars.gcs_prefix }}"
+      GCS_BUCKET: "{{vars.gcs_bucket}}"
+      FDA_URL: "{{render(vars.fda_url)}}"
+      GCS_PREFIX: "{{render(vars.gcs_prefix)}}"
     script: |
       import io, logging, os, zipfile
       import requests
@@ -70,44 +56,39 @@ tasks:
       logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
       log = logging.getLogger(__name__)
 
-      # The 7 standard FAERS file types — matched by prefix of the lowercased stem
       FILE_TYPES = ["demo", "drug", "reac", "outc", "rpsr", "ther", "indi"]
 
       fda_url    = os.environ["FDA_URL"]
       gcs_bucket = os.environ["GCS_BUCKET"]
       gcs_prefix = os.environ["GCS_PREFIX"]
 
-      # ── Download ─────────────────────────────────────────────────────────────
       log.info(f"Downloading {fda_url}")
       resp = requests.get(fda_url, timeout=300, stream=True)
       resp.raise_for_status()
       zip_bytes = io.BytesIO(resp.content)
       log.info(f"Download complete ({len(resp.content) / 1_000_000:.1f} MB)")
 
-      # ── Extract + upload ──────────────────────────────────────────────────────
       client   = storage.Client()
       bucket   = client.bucket(gcs_bucket)
       uploaded = []
 
       with zipfile.ZipFile(zip_bytes) as zf:
           for entry in zf.namelist():
-              basename = os.path.basename(entry).lower()   # e.g. "demo23q4.txt"
+              basename = os.path.basename(entry).lower()
               if not basename.endswith(".txt"):
                   continue
-              stem = os.path.splitext(basename)[0]         # "demo23q4"
-              # Match to a known FAERS file type by its 4-char prefix
+              stem = os.path.splitext(basename)[0]
               matched = next((ft for ft in FILE_TYPES if stem.startswith(ft)), None)
               if matched is None:
                   log.warning(f"Skipping unrecognised file in ZIP: {entry}")
                   continue
               gcs_path = f"{gcs_prefix}/{matched}.txt"
-              log.info(f"Uploading {entry!r} → gs://{gcs_bucket}/{gcs_path}")
+              log.info(f"Uploading {entry} to gs://{gcs_bucket}/{gcs_path}")
               with zf.open(entry) as src:
                   blob = bucket.blob(gcs_path)
                   blob.upload_from_file(src, content_type="text/plain")
               uploaded.append(matched)
 
-      # ── Validate all 7 files were found ───────────────────────────────────────
       missing = set(FILE_TYPES) - set(uploaded)
       if missing:
           raise ValueError(
@@ -115,148 +96,133 @@ tasks:
               f"Found: {sorted(uploaded)}"
           )
 
-      log.info(
-          f"All 7 files uploaded → gs://{gcs_bucket}/{gcs_prefix}/"
-      )
-
-  # ── 3. BigQuery loads (one task per FAERS file) ──────────────────────────────
-  # Native Kestra GCP plugin — uses GOOGLE_APPLICATION_CREDENTIALS from the
-  # Kestra container environment (set in docker-compose.yml) via ADC.
-  # WRITE_TRUNCATE makes every run idempotent for the target quarter table.
+      log.info(f"All 7 files uploaded to gs://{gcs_bucket}/{gcs_prefix}/")
 
   - id: load_demo
     type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
-    projectId: "{{ envs.GCP_PROJECT_ID }}"
-    dataset: faers_raw
-    table: "demo_{{ vars.table_suffix }}"
+    destinationTable: "faers_raw.demo_{{render(vars.table_suffix)}}"
     from:
-      - "gs://{{ envs.GCS_BUCKET }}/{{ vars.gcs_prefix }}/demo.txt"
+      - "gs://{{vars.gcs_bucket}}/{{render(vars.gcs_prefix)}}/demo.txt"
     format: CSV
-    fieldDelimiter: "$"
     autodetect: true
-    skipLeadingRows: 1
     createDisposition: CREATE_IF_NEEDED
     writeDisposition: WRITE_TRUNCATE
-    allowJaggedRows: true
-    allowQuotedNewlines: false
     ignoreUnknownValues: true
+    csvOptions:
+      fieldDelimiter: "$"
+      skipLeadingRows: 1
+      allowJaggedRows: true
+      allowQuotedNewLines: false
 
   - id: load_drug
     type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
-    projectId: "{{ envs.GCP_PROJECT_ID }}"
-    dataset: faers_raw
-    table: "drug_{{ vars.table_suffix }}"
+    destinationTable: "faers_raw.drug_{{render(vars.table_suffix)}}"
     from:
-      - "gs://{{ envs.GCS_BUCKET }}/{{ vars.gcs_prefix }}/drug.txt"
+      - "gs://{{vars.gcs_bucket}}/{{render(vars.gcs_prefix)}}/drug.txt"
     format: CSV
-    fieldDelimiter: "$"
     autodetect: true
-    skipLeadingRows: 1
     createDisposition: CREATE_IF_NEEDED
     writeDisposition: WRITE_TRUNCATE
-    allowJaggedRows: true
-    allowQuotedNewlines: false
     ignoreUnknownValues: true
+    csvOptions:
+      fieldDelimiter: "$"
+      skipLeadingRows: 1
+      allowJaggedRows: true
+      allowQuotedNewLines: false
 
   - id: load_reac
     type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
-    projectId: "{{ envs.GCP_PROJECT_ID }}"
-    dataset: faers_raw
-    table: "reac_{{ vars.table_suffix }}"
+    destinationTable: "faers_raw.reac_{{render(vars.table_suffix)}}"
     from:
-      - "gs://{{ envs.GCS_BUCKET }}/{{ vars.gcs_prefix }}/reac.txt"
+      - "gs://{{vars.gcs_bucket}}/{{render(vars.gcs_prefix)}}/reac.txt"
     format: CSV
-    fieldDelimiter: "$"
     autodetect: true
-    skipLeadingRows: 1
     createDisposition: CREATE_IF_NEEDED
     writeDisposition: WRITE_TRUNCATE
-    allowJaggedRows: true
-    allowQuotedNewlines: false
     ignoreUnknownValues: true
+    csvOptions:
+      fieldDelimiter: "$"
+      skipLeadingRows: 1
+      allowJaggedRows: true
+      allowQuotedNewLines: false
 
   - id: load_outc
     type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
-    projectId: "{{ envs.GCP_PROJECT_ID }}"
-    dataset: faers_raw
-    table: "outc_{{ vars.table_suffix }}"
+    destinationTable: "faers_raw.outc_{{render(vars.table_suffix)}}"
     from:
-      - "gs://{{ envs.GCS_BUCKET }}/{{ vars.gcs_prefix }}/outc.txt"
+      - "gs://{{vars.gcs_bucket}}/{{render(vars.gcs_prefix)}}/outc.txt"
     format: CSV
-    fieldDelimiter: "$"
     autodetect: true
-    skipLeadingRows: 1
     createDisposition: CREATE_IF_NEEDED
     writeDisposition: WRITE_TRUNCATE
-    allowJaggedRows: true
-    allowQuotedNewlines: false
     ignoreUnknownValues: true
+    csvOptions:
+      fieldDelimiter: "$"
+      skipLeadingRows: 1
+      allowJaggedRows: true
+      allowQuotedNewLines: false
 
   - id: load_rpsr
     type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
-    projectId: "{{ envs.GCP_PROJECT_ID }}"
-    dataset: faers_raw
-    table: "rpsr_{{ vars.table_suffix }}"
+    destinationTable: "faers_raw.rpsr_{{render(vars.table_suffix)}}"
     from:
-      - "gs://{{ envs.GCS_BUCKET }}/{{ vars.gcs_prefix }}/rpsr.txt"
+      - "gs://{{vars.gcs_bucket}}/{{render(vars.gcs_prefix)}}/rpsr.txt"
     format: CSV
-    fieldDelimiter: "$"
     autodetect: true
-    skipLeadingRows: 1
     createDisposition: CREATE_IF_NEEDED
     writeDisposition: WRITE_TRUNCATE
-    allowJaggedRows: true
-    allowQuotedNewlines: false
     ignoreUnknownValues: true
+    csvOptions:
+      fieldDelimiter: "$"
+      skipLeadingRows: 1
+      allowJaggedRows: true
+      allowQuotedNewLines: false
 
   - id: load_ther
     type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
-    projectId: "{{ envs.GCP_PROJECT_ID }}"
-    dataset: faers_raw
-    table: "ther_{{ vars.table_suffix }}"
+    destinationTable: "faers_raw.ther_{{render(vars.table_suffix)}}"
     from:
-      - "gs://{{ envs.GCS_BUCKET }}/{{ vars.gcs_prefix }}/ther.txt"
+      - "gs://{{vars.gcs_bucket}}/{{render(vars.gcs_prefix)}}/ther.txt"
     format: CSV
-    fieldDelimiter: "$"
     autodetect: true
-    skipLeadingRows: 1
     createDisposition: CREATE_IF_NEEDED
     writeDisposition: WRITE_TRUNCATE
-    allowJaggedRows: true
-    allowQuotedNewlines: false
     ignoreUnknownValues: true
+    csvOptions:
+      fieldDelimiter: "$"
+      skipLeadingRows: 1
+      allowJaggedRows: true
+      allowQuotedNewLines: false
 
   - id: load_indi
     type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
-    projectId: "{{ envs.GCP_PROJECT_ID }}"
-    dataset: faers_raw
-    table: "indi_{{ vars.table_suffix }}"
+    destinationTable: "faers_raw.indi_{{render(vars.table_suffix)}}"
     from:
-      - "gs://{{ envs.GCS_BUCKET }}/{{ vars.gcs_prefix }}/indi.txt"
+      - "gs://{{vars.gcs_bucket}}/{{render(vars.gcs_prefix)}}/indi.txt"
     format: CSV
-    fieldDelimiter: "$"
     autodetect: true
-    skipLeadingRows: 1
     createDisposition: CREATE_IF_NEEDED
     writeDisposition: WRITE_TRUNCATE
-    allowJaggedRows: true
-    allowQuotedNewlines: false
     ignoreUnknownValues: true
+    csvOptions:
+      fieldDelimiter: "$"
+      skipLeadingRows: 1
+      allowJaggedRows: true
+      allowQuotedNewLines: false
 
-  # ── 4. Log success ───────────────────────────────────────────────────────────
   - id: log_success
     type: io.kestra.plugin.core.log.Log
-    message: >
-      FAERS {{ inputs.year }} {{ inputs.quarter }} ingestion complete.
-      7 tables loaded into faers_raw (suffix: {{ vars.table_suffix }}).
-      GCS path: gs://{{ envs.GCS_BUCKET }}/{{ vars.gcs_prefix }}/
+    message: "FAERS {{ inputs.year }} {{ inputs.quarter }} ingestion complete. 7 tables loaded into faers_raw."
     level: INFO
 
-# ── Error handler ──────────────────────────────────────────────────────────────
 errors:
   - id: log_failure
     type: io.kestra.plugin.core.log.Log
-    message: >
-      FAERS {{ inputs.year }} {{ inputs.quarter }} ingestion FAILED.
-      Review the task logs above for details.
+    message: "FAERS {{ inputs.year }} {{ inputs.quarter }} ingestion FAILED. Review task logs for details."
     level: ERROR
+
+pluginDefaults:
+  - type: io.kestra.plugin.gcp
+    values:
+      projectId: "{{vars.gcp_project}}"
+      location: US

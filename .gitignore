@@ -6,3 +6,5 @@
 /CLAUDE.md
 .env
 docker-compose.override.yml
+/kestra/00_reference-notes
+/kestra/example-flows

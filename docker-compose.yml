@@ -26,7 +26,7 @@ services:
       # ADC credential file — must be copied to host at /tmp/gcp-adc.json first
       # (see Prerequisites above).  Mounted read-only into Kestra AND into any
       # Docker-based script tasks that declare the same volume.
-      - /tmp/gcp-adc.json:/tmp/gcp-adc.json:ro
+      - /tmp/gcp-adc.json:/tmp/gcp-adc.json
     environment:
       # GCP authentication — picked up by native Kestra GCP plugins automatically
       GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-adc.json
@@ -42,9 +42,8 @@ services:
         kestra:
           server:
             basicAuth:
-              enabled: false
-              username: "admin@kestra.io"
-              password: kestra
+              username: admin@kestra.io
+              password: Kestra123
           repository:
             type: memory
           storage:

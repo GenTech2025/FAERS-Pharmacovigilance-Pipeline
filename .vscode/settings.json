@@ -1,0 +1,3 @@
+{
+    "dbt.dbtPythonPathOverride": "\"); print(sys.executable); print(\""
+}

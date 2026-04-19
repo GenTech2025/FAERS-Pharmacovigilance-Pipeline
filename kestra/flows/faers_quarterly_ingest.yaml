@@ -48,6 +48,7 @@ tasks:
       GCS_BUCKET: "{{vars.gcs_bucket}}"
       FDA_URL: "{{render(vars.fda_url)}}"
       GCS_PREFIX: "{{render(vars.gcs_prefix)}}"
+      GOOGLE_CLOUD_PROJECT: "{{vars.gcp_project}}"
     script: |
       import io, logging, os, zipfile
       import requests
